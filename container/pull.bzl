@@ -19,17 +19,14 @@ construct new images.
 """
 
 def python(repository_ctx):
-    if "BAZEL_PYTHON" in repository_ctx.os.environ:
-        return repository_ctx.os.environ.get("BAZEL_PYTHON")
-
     python_path = repository_ctx.which("python2")
     if not python_path:
         python_path = repository_ctx.which("python2.exe")
     if python_path:
         return python_path
 
-    fail("rules_docker requires a python interpreter installed. " +
-         "Please set BAZEL_PYTHON, or put it on your path.")
+    fail("rules_docker requires a python2 interpreter installed. " +
+         "Please put it on your path.")
 
 def _impl(repository_ctx):
     """Core implementation of container_pull."""
