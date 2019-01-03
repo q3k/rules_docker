@@ -15,7 +15,7 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])  # Apache 2.0
 
-load("@bazel_skylib//:skylark_library.bzl", "skylark_library")
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 exports_files(["push-tag.sh.tpl"])
 
@@ -139,6 +139,7 @@ TEST_TARGETS = [
     ":nodejs_image",
     ":py3_image",
     ":py_image",
+    ":py_image_complex",
     ":rust_image",
     ":scala_image",
     ":war_image",
@@ -160,16 +161,17 @@ py_test(
     deps = ["@containerregistry"],
 )
 
-skylark_library(
+bzl_library(
     name = "bundle",
     srcs = ["bundle.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:label",
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "container",
     srcs = ["container.bzl"],
     deps = [
@@ -182,34 +184,36 @@ skylark_library(
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "flatten",
     srcs = ["flatten.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:label",
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "image",
     srcs = ["image.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:filetype",
         "//skylib:label",
         "//skylib:path",
-        "//skylib:serialize",
         "//skylib:zip",
         "@bazel_tools//tools/build_defs/hash:hash.bzl",
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "import",
     srcs = ["import.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:filetype",
         "//skylib:path",
         "//skylib:zip",
@@ -217,11 +221,12 @@ skylark_library(
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "layer",
     srcs = ["layer.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:filetype",
         "//skylib:path",
         "//skylib:zip",
@@ -229,28 +234,34 @@ skylark_library(
     ],
 )
 
-skylark_library(
+bzl_library(
     name = "layer_tools",
     srcs = ["layer_tools.bzl"],
     deps = ["//skylib:path"],
 )
 
-skylark_library(
+bzl_library(
     name = "load",
     srcs = ["load.bzl"],
     deps = [":pull"],
 )
 
-skylark_library(
+bzl_library(
+    name = "providers",
+    srcs = ["providers.bzl"],
+)
+
+bzl_library(
     name = "pull",
     srcs = ["pull.bzl"],
 )
 
-skylark_library(
+bzl_library(
     name = "push",
     srcs = ["push.bzl"],
     deps = [
         ":layer_tools",
+        ":providers",
         "//skylib:path",
     ],
 )

@@ -13,26 +13,42 @@
 # limitations under the License.
 """Rules for manipulation container images."""
 
-load("//container:bundle.bzl", "container_bundle")
-load("//container:flatten.bzl", "container_flatten")
-load("//container:image.bzl", "container_image", "image")
-load("//container:layer.bzl", "container_layer")
-load("//container:import.bzl", "container_import")
-load("//container:load.bzl", "container_load")
-load("//container:pull.bzl", "container_pull")
-load("//container:push.bzl", "container_push")
+load("//container:bundle.bzl", _container_bundle = "container_bundle")
+load("//container:flatten.bzl", _container_flatten = "container_flatten")
+load("//container:image.bzl", _container_image = "container_image", _image = "image")
+load("//container:layer.bzl", _container_layer = "container_layer")
+load("//container:import.bzl", _container_import = "container_import")
+load("//container:load.bzl", _container_load = "container_load")
+load("//container:pull.bzl", _container_pull = "container_pull")
+load("//container:push.bzl", _container_push = "container_push")
 load(
     "@bazel_tools//tools/build_defs/repo:http.bzl",
     "http_archive",
     "http_file",
 )
+load(
+    "@io_bazel_rules_docker//toolchains/docker:toolchain.bzl",
+    _docker_toolchain_configure = "toolchain_configure",
+)
+
+# Explicitly re-export the functions
+container_bundle = _container_bundle
+container_flatten = _container_flatten
+container_image = _container_image
+image = _image
+container_layer = _container_layer
+container_import = _container_import
+container_pull = _container_pull
+container_push = _container_push
+
+container_load = _container_load
 
 container = struct(
     image = image,
 )
 
 # The release of the github.com/google/containerregistry to consume.
-CONTAINERREGISTRY_RELEASE = "v0.0.28"
+CONTAINERREGISTRY_RELEASE = "v0.0.34"
 
 _local_tool_build_template = """
 sh_binary(
@@ -67,28 +83,28 @@ def repositories():
     if "puller" not in excludes:
         http_file(
             name = "puller",
+            executable = True,
+            sha256 = "2a3ccb6ef8f99ec0053b56380824a7c100ba00eb0e147d1bda748884113542f1",
             urls = [("https://storage.googleapis.com/containerregistry-releases/" +
                      CONTAINERREGISTRY_RELEASE + "/puller.par")],
-            sha256 = "c834a311a1d2ade959c38c262dfead3b180ba022d196c4a96453d4bfa01e83da",
-            executable = True,
         )
 
     if "importer" not in excludes:
         http_file(
             name = "importer",
+            executable = True,
+            sha256 = "0eec1a4ffb26623dbb4075e5459fa0ede36548edf872d2691ebbcb3c4ccb8cf3",
             urls = [("https://storage.googleapis.com/containerregistry-releases/" +
                      CONTAINERREGISTRY_RELEASE + "/importer.par")],
-            sha256 = "19643df59bb1dc750e97991e7071c601aa2debe94f6ad72e5f23ab8ae77da46f",
-            executable = True,
         )
 
     if "containerregistry" not in excludes:
         http_archive(
             name = "containerregistry",
+            sha256 = "8182728578f7d7178e7efcef8ce9074988a1a2667f20ecff5cf6234fba284dd3",
+            strip_prefix = "containerregistry-" + CONTAINERREGISTRY_RELEASE[1:],
             urls = [("https://github.com/google/containerregistry/archive/" +
                      CONTAINERREGISTRY_RELEASE + ".tar.gz")],
-            sha256 = "07b9d06e46a9838bef712116bbda7e094ede37be010c1f8c0a3f32f2eeca6384",
-            strip_prefix = "containerregistry-" + CONTAINERREGISTRY_RELEASE[1:],
         )
 
     # TODO(mattmoor): Remove all of this (copied from google/containerregistry)
@@ -98,10 +114,6 @@ def repositories():
         # TODO(mattmoor): Is there a clean way to override?
         http_archive(
             name = "httplib2",
-            url = "https://codeload.github.com/httplib2/httplib2/tar.gz/v0.11.3",
-            sha256 = "d9f568c183d1230f271e9c60bd99f3f2b67637c3478c9068fea29f7cca3d911f",
-            strip_prefix = "httplib2-0.11.3/python2/httplib2/",
-            type = "tar.gz",
             build_file_content = """
 py_library(
    name = "httplib2",
@@ -109,6 +121,10 @@ py_library(
    data = ["cacerts.txt"],
    visibility = ["//visibility:public"]
 )""",
+            sha256 = "d9f568c183d1230f271e9c60bd99f3f2b67637c3478c9068fea29f7cca3d911f",
+            strip_prefix = "httplib2-0.11.3/python2/httplib2/",
+            type = "tar.gz",
+            urls = ["https://codeload.github.com/httplib2/httplib2/tar.gz/v0.11.3"],
         )
 
     # Used by oauth2client
@@ -116,10 +132,6 @@ py_library(
         # TODO(mattmoor): Is there a clean way to override?
         http_archive(
             name = "six",
-            url = "https://pypi.python.org/packages/source/s/six/six-1.9.0.tar.gz",
-            sha256 = "e24052411fc4fbd1f672635537c3fc2330d9481b18c0317695b46259512c91d5",
-            strip_prefix = "six-1.9.0/",
-            type = "tar.gz",
             build_file_content = """
 # Rename six.py to __init__.py
 genrule(
@@ -133,6 +145,10 @@ py_library(
    srcs = [":__init__.py"],
    visibility = ["//visibility:public"],
 )""",
+            sha256 = "e24052411fc4fbd1f672635537c3fc2330d9481b18c0317695b46259512c91d5",
+            strip_prefix = "six-1.9.0/",
+            type = "tar.gz",
+            urls = ["https://pypi.python.org/packages/source/s/six/six-1.9.0.tar.gz"],
         )
 
     # Used for authentication in containerregistry
@@ -140,10 +156,6 @@ py_library(
         # TODO(mattmoor): Is there a clean way to override?
         http_archive(
             name = "oauth2client",
-            url = "https://codeload.github.com/google/oauth2client/tar.gz/v4.0.0",
-            sha256 = "7230f52f7f1d4566a3f9c3aeb5ffe2ed80302843ce5605853bee1f08098ede46",
-            strip_prefix = "oauth2client-4.0.0/oauth2client/",
-            type = "tar.gz",
             build_file_content = """
 py_library(
    name = "oauth2client",
@@ -154,6 +166,10 @@ py_library(
      "@six//:six",
    ]
 )""",
+            sha256 = "7230f52f7f1d4566a3f9c3aeb5ffe2ed80302843ce5605853bee1f08098ede46",
+            strip_prefix = "oauth2client-4.0.0/oauth2client/",
+            type = "tar.gz",
+            urls = ["https://codeload.github.com/google/oauth2client/tar.gz/v4.0.0"],
         )
 
     # Used for parallel execution in containerregistry
@@ -161,16 +177,16 @@ py_library(
         # TODO(mattmoor): Is there a clean way to override?
         http_archive(
             name = "concurrent",
-            url = "https://codeload.github.com/agronholm/pythonfutures/tar.gz/3.0.5",
-            sha256 = "a7086ddf3c36203da7816f7e903ce43d042831f41a9705bc6b4206c574fcb765",
-            strip_prefix = "pythonfutures-3.0.5/concurrent/",
-            type = "tar.gz",
             build_file_content = """
 py_library(
    name = "concurrent",
    srcs = glob(["**/*.py"]),
    visibility = ["//visibility:public"]
 )""",
+            sha256 = "a7086ddf3c36203da7816f7e903ce43d042831f41a9705bc6b4206c574fcb765",
+            strip_prefix = "pythonfutures-3.0.5/concurrent/",
+            type = "tar.gz",
+            urls = ["https://codeload.github.com/agronholm/pythonfutures/tar.gz/3.0.5"],
         )
 
     # For packaging python tools.
@@ -198,16 +214,29 @@ py_library(
             urls = ["https://storage.googleapis.com/container-structure-test/v1.4.0/container-structure-test-darwin-amd64"],
         )
 
-    # For skylark_library.
+    # For bzl_library.
     if "bazel_skylib" not in excludes:
         http_archive(
             name = "bazel_skylib",
-            sha256 = "981624731d7371061ca56d532fa00d33bdda3e9d62e085698880346a01d0a6ef",
-            strip_prefix = "bazel-skylib-0.2.0",
-            urls = ["https://github.com/bazelbuild/bazel-skylib/archive/0.2.0.tar.gz"],
+            sha256 = "eb5c57e4c12e68c0c20bc774bfbc60a568e800d025557bc4ea022c6479acc867",
+            strip_prefix = "bazel-skylib-0.6.0",
+            urls = ["https://github.com/bazelbuild/bazel-skylib/archive/0.6.0.tar.gz"],
         )
 
     if "gzip" not in excludes:
         local_tool(
             name = "gzip",
         )
+
+    native.register_toolchains(
+        # Register the default docker toolchain that expects the 'docker'
+        # executable to be in the PATH
+        "@io_bazel_rules_docker//toolchains/docker:default_linux_toolchain",
+        "@io_bazel_rules_docker//toolchains/docker:default_windows_toolchain",
+        "@io_bazel_rules_docker//toolchains/docker:default_osx_toolchain",
+    )
+
+    if "docker_config" not in excludes:
+        # Automatically configure the docker toolchain rule to use the default
+        # docker binary from the system path
+        _docker_toolchain_configure(name = "docker_config")

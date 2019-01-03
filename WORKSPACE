@@ -43,6 +43,47 @@ container_load(
     file = "//testdata:pause.tar",
 )
 
+container_pull(
+    name = "alpine_linux_amd64",
+    registry = "index.docker.io",
+    repository = "library/alpine",
+    tag = "3.8",
+)
+
+container_pull(
+    name = "alpine_linux_armv6",
+    architecture = "arm",
+    cpu_variant = "v6",
+    os = "linux",
+    registry = "index.docker.io",
+    repository = "library/alpine",
+    tag = "3.8",
+)
+
+container_pull(
+    name = "alpine_linux_ppc64le",
+    architecture = "ppc64le",
+    registry = "index.docker.io",
+    repository = "library/alpine",
+    tag = "3.8",
+)
+
+container_pull(
+    name = "k8s_pause_amd64",
+    # this is a manifest list, so the resolved digest should not match this digest
+    digest = "sha256:f78411e19d84a252e53bff71a4407a5686c46983a2c2eeed83929b888179acea",
+    registry = "k8s.gcr.io",
+    repository = "pause",
+)
+
+container_pull(
+    name = "k8s_pause_arm64",
+    architecture = "arm64",
+    registry = "k8s.gcr.io",
+    repository = "pause",
+    tag = "3.1",
+)
+
 # For testing, don't change the sha on these ones
 container_pull(
     name = "distroless_fixed_id",
@@ -65,6 +106,26 @@ load(
 )
 
 _py_image_repos()
+
+http_archive(
+    name = "io_bazel_rules_python",
+    sha256 = "da960ee6f0e2e08556d0e0c307896b0ea6ebc8d86f50c649ceda361b71df74a1",
+    strip_prefix = "rules_python-f3a6a8d00a51a1f0e6d61bc7065c19fea2b3dd7a",
+    urls = ["https://github.com/bazelbuild/rules_python/archive/f3a6a8d00a51a1f0e6d61bc7065c19fea2b3dd7a.tar.gz"],
+)
+
+load("@io_bazel_rules_python//python:pip.bzl", "pip_import", "pip_repositories")
+
+pip_repositories()
+
+pip_import(
+    name = "pip_deps",
+    requirements = "//testdata:requirements-pip.txt",
+)
+
+load("@pip_deps//:requirements.bzl", "pip_install")
+
+pip_install()
 
 load(
     "//python3:image.bzl",
@@ -99,9 +160,9 @@ maven_jar(
 # For our scala_image test.
 http_archive(
     name = "io_bazel_rules_scala",
-    sha256 = "50465838809fee66cab66fa20ed3d68c667f663958ede10fbe504a0d18481016",
-    strip_prefix = "rules_scala-5874a2441596fe9a0bf80e167a4d7edd945c221e",
-    urls = ["https://github.com/bazelbuild/rules_scala/archive/5874a2441596fe9a0bf80e167a4d7edd945c221e.tar.gz"],
+    sha256 = "83d40e0bc7377e77fa0d32af6c4b276374b4efbcb3120c437e425947cdb3ce38",
+    strip_prefix = "rules_scala-5130b97524684beceba729b9dab1528e2a90cdfb",
+    urls = ["https://github.com/bazelbuild/rules_scala/archive/5130b97524684beceba729b9dab1528e2a90cdfb.tar.gz"],
 )
 
 load("@io_bazel_rules_scala//scala:scala.bzl", "scala_repositories")
@@ -115,9 +176,9 @@ scala_register_toolchains()
 # For our groovy_image test.
 http_archive(
     name = "io_bazel_rules_groovy",
-    sha256 = "c54168848cf2b733cb95fda4eaacd74a94c052e2e9db086253555686ae70d53f",
-    strip_prefix = "rules_groovy-54cb1746d0832feca3a610fef7da92bbe6e7cbd4",
-    urls = ["https://github.com/bazelbuild/rules_groovy/archive/54cb1746d0832feca3a610fef7da92bbe6e7cbd4.tar.gz"],
+    sha256 = "22669b0379e496555f574612043c6c3f1f6145c18d2697ddd308937d6d96f9ad",
+    strip_prefix = "rules_groovy-cb174f4e7d6b9cbda06d4a0f538214f947747736",
+    urls = ["https://github.com/bazelbuild/rules_groovy/archive/cb174f4e7d6b9cbda06d4a0f538214f947747736.tar.gz"],
 )
 
 load("@io_bazel_rules_groovy//groovy:groovy.bzl", "groovy_repositories")
@@ -127,9 +188,8 @@ groovy_repositories()
 # For our go_image test.
 http_archive(
     name = "io_bazel_rules_go",
-    sha256 = "50207a04b74fe30218b06ac4467ea3862b9a3c99d3df7686be0eae02108ea06f",
-    strip_prefix = "rules_go-0.13.0",
-    urls = ["https://github.com/bazelbuild/rules_go/archive/0.13.0.tar.gz"],
+    sha256 = "62ec3496a00445889a843062de9930c228b770218c735eca89c67949cd967c3f",
+    url = "https://github.com/bazelbuild/rules_go/releases/download/0.16.4/rules_go-0.16.4.tar.gz",
 )
 
 load("@io_bazel_rules_go//go:def.bzl", "go_register_toolchains", "go_rules_dependencies")
@@ -149,14 +209,20 @@ _go_image_repos()
 # For our rust_image test
 http_archive(
     name = "io_bazel_rules_rust",
-    sha256 = "615639cfd5459fec4b8a5751112be808ab25ba647c4c1953d29bb554ef865da7",
-    strip_prefix = "rules_rust-0.0.6",
-    urls = ["https://github.com/bazelbuild/rules_rust/archive/0.0.6.tar.gz"],
+    sha256 = "500d06096a44ff6d77256635dbe6ab61b23c2be626e2acb08a4c060092e711d0",
+    strip_prefix = "rules_rust-db81b42d98e1232e001e26a50c37f2097d61a207",
+    urls = ["https://github.com/bazelbuild/rules_rust/archive/db81b42d98e1232e001e26a50c37f2097d61a207.tar.gz"],
 )
 
 load("@io_bazel_rules_rust//rust:repositories.bzl", "rust_repositories")
 
 rust_repositories()
+
+# The following is required by rules_rust, remove once
+# https://github.com/bazelbuild/rules_rust/issues/167 is fixed
+load("@io_bazel_rules_rust//:workspace.bzl", "bazel_version")
+
+bazel_version(name = "bazel_version")
 
 # For our d_image test
 http_archive(
@@ -172,9 +238,9 @@ d_repositories()
 
 http_archive(
     name = "build_bazel_rules_nodejs",
-    sha256 = "779edee08986ab40dbf8b1ad0260f3cc8050f1e96ccd2a88dc499848bbdb787f",
-    strip_prefix = "rules_nodejs-0.11.1",
-    urls = ["https://github.com/bazelbuild/rules_nodejs/archive/0.11.1.zip"],
+    sha256 = "9b72bb0aea72d7cbcfc82a01b1e25bf3d85f791e790ddec16c65e2d906382ee0",
+    strip_prefix = "rules_nodejs-0.16.2",
+    urls = ["https://github.com/bazelbuild/rules_nodejs/archive/0.16.2.zip"],
 )
 
 load("@build_bazel_rules_nodejs//:defs.bzl", "node_repositories", "npm_install")
@@ -192,3 +258,13 @@ load(
 )
 
 _nodejs_image_repos()
+
+http_archive(
+    name = "bazel_toolchains",
+    sha256 = "07a81ee03f5feae354c9f98c884e8e886914856fb2b6a63cba4619ef10aaaf0b",
+    strip_prefix = "bazel-toolchains-31b5dc8c4e9c7fd3f5f4d04c6714f2ce87b126c1",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-toolchains/archive/31b5dc8c4e9c7fd3f5f4d04c6714f2ce87b126c1.tar.gz",
+        "https://github.com/bazelbuild/bazel-toolchains/archive/31b5dc8c4e9c7fd3f5f4d04c6714f2ce87b126c1.tar.gz",
+    ],
+)

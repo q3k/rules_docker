@@ -67,8 +67,11 @@ load(
     _layer_tools = "tools",
 )
 load(
-    "//container:layer.bzl",
+    "//container:providers.bzl",
     "LayerInfo",
+)
+load(
+    "//container:layer.bzl",
     _layer = "layer",
 )
 load(
@@ -78,10 +81,6 @@ load(
     _canonicalize_path = "canonicalize",
     _join_path = "join",
 )
-load(
-    "//skylib:serialize.bzl",
-    _serialize_dict = "dict_to_associative_list",
-)
 load("//container:providers.bzl", "ImageInfo")
 
 def _get_base_config(ctx, name, base):
@@ -89,6 +88,12 @@ def _get_base_config(ctx, name, base):
         # The base is the first layer in container_parts if provided.
         l = _get_layers(ctx, name, ctx.attr.base, base)
         return l.get("config")
+
+def _get_base_manifest(ctx, name, base):
+    if ctx.files.base or base:
+        # The base is the first layer in container_parts if provided.
+        layer = _get_layers(ctx, name, ctx.attr.base, base)
+        return layer.get("manifest")
 
 def _image_config(
         ctx,
@@ -99,12 +104,15 @@ def _image_config(
         creation_time = None,
         env = None,
         base_config = None,
+        base_manifest = None,
+        operating_system = None,
         layer_name = None,
         workdir = None,
         null_entrypoint = False,
         null_cmd = False):
     """Create the configuration for a new container image."""
-    config = ctx.new_file(name + "." + layer_name + ".config")
+    config = ctx.actions.declare_file(name + "." + layer_name + ".config")
+    manifest = ctx.actions.declare_file(name + "." + layer_name + ".manifest")
 
     label_file_dict = _string_to_label(
         ctx.files.label_files,
@@ -121,6 +129,8 @@ def _image_config(
 
     args = [
         "--output=%s" % config.path,
+    ] + [
+        "--manifestoutput=%s" % manifest.path,
     ] + [
         "--entrypoint=%s" % x
         for x in entrypoint
@@ -145,12 +155,8 @@ def _image_config(
         # default to '{BUILD_TIMESTAMP}'.
         args += ["--creation_time={BUILD_TIMESTAMP}"]
 
-    _labels = _serialize_dict(labels)
-    if _labels:
-        args += ["--labels=%s" % x for x in _labels.split(",")]
-    _env = _serialize_dict(env)
-    if _env:
-        args += ["--env=%s" % x for x in _env.split(",")]
+    args += ["--labels=%s" % "=".join([key, value]) for key, value in labels.items()]
+    args += ["--env=%s" % "=".join([key, value]) for key, value in env.items()]
 
     if ctx.attr.user:
         args += ["--user=" + ctx.attr.user]
@@ -168,20 +174,35 @@ def _image_config(
         args += ["--base=%s" % base_config.path]
         inputs += [base_config]
 
+    if base_manifest:
+        args += ["--basemanifest=%s" % base_manifest.path]
+        inputs += [base_manifest]
+
+    if operating_system:
+        args += ["--operating_system=%s" % operating_system]
+
     if ctx.attr.stamp:
         stamp_inputs = [ctx.info_file, ctx.version_file]
         args += ["--stamp-info-file=%s" % f.path for f in stamp_inputs]
         inputs += stamp_inputs
 
-    ctx.action(
+    if ctx.attr.launcher_args and not ctx.attr.launcher:
+        fail("launcher_args does nothing when launcher is not specified.", attr = "launcher_args")
+    if ctx.attr.launcher:
+        args += [
+            "--entrypoint_prefix=%s" % x
+            for x in ["/" + ctx.file.launcher.basename] + ctx.attr.launcher_args
+        ]
+
+    ctx.actions.run(
         executable = ctx.executable.create_image_config,
         arguments = args,
         inputs = inputs,
-        outputs = [config],
+        outputs = [config, manifest],
         use_default_shell_env = True,
         mnemonic = "ImageConfig",
     )
-    return config, _sha256(ctx, config)
+    return config, _sha256(ctx, config), manifest, _sha256(ctx, manifest)
 
 def _repository_name(ctx):
     """Compute the repository name for the current rule."""
@@ -193,6 +214,28 @@ def _repository_name(ctx):
     # the v2 registry specification.
 
     return _join_path(ctx.attr.repository, ctx.label.package)
+
+def _assemble_image_digest(ctx, name, image, image_tarball, output_digest):
+    blobsums = image.get("blobsum", [])
+    digest_args = ["--digest=%s" % f.path for f in blobsums]
+    blobs = image.get("zipped_layer", [])
+    layer_args = ["--layer=%s" % f.path for f in blobs]
+    config_arg = "--config=%s" % image["config"].path
+    output_digest_arg = "--output-digest=%s" % output_digest.path
+
+    arguments = [config_arg, output_digest_arg] + layer_args + digest_args
+    if image.get("legacy"):
+        arguments.append("--tarball=%s" % image["legacy"].path)
+
+    ctx.actions.run(
+        outputs = [output_digest],
+        inputs = [image["config"]] + blobsums + blobs +
+                 ([image["legacy"]] if image.get("legacy") else []),
+        executable = ctx.executable._digester,
+        arguments = arguments,
+        mnemonic = "ImageDigest",
+        progress_message = "Extracting image digest of %s" % image_tarball.short_path,
+    )
 
 def _impl(
         ctx,
@@ -211,8 +254,10 @@ def _impl(
         layers = None,
         debs = None,
         tars = None,
+        operating_system = None,
         output_executable = None,
         output_tarball = None,
+        output_digest = None,
         output_layer = None,
         workdir = None,
         null_cmd = None,
@@ -236,8 +281,10 @@ def _impl(
     layers: label List, overrides ctx.attr.layers
     debs: File list, overrides ctx.files.debs
     tars: File list, overrides ctx.files.tars
+    operating_system: Operating system to target (e.g. linux, windows)
     output_executable: File to use as output for script to load docker image
     output_tarball: File, overrides ctx.outputs.out
+    output_digest: File, overrides ctx.outputs.digest
     output_layer: File, overrides ctx.outputs.layer
     workdir: str, overrides ctx.attr.workdir
     null_cmd: bool, overrides ctx.attr.null_cmd
@@ -246,12 +293,27 @@ def _impl(
     name = name or ctx.label.name
     entrypoint = entrypoint or ctx.attr.entrypoint
     cmd = cmd or ctx.attr.cmd
+    operating_system = operating_system or ctx.attr.operating_system
     creation_time = creation_time or ctx.attr.creation_time
     output_executable = output_executable or ctx.outputs.executable
     output_tarball = output_tarball or ctx.outputs.out
+    output_digest = output_digest or ctx.outputs.digest
     output_layer = output_layer or ctx.outputs.layer
     null_cmd = null_cmd or ctx.attr.null_cmd
-    null_entrypoint = ctx.attr.null_entrypoint
+    null_entrypoint = null_entrypoint or ctx.attr.null_entrypoint
+
+    # legacy_run_behavior and docker_run_flags from base override those from
+    # ctx.
+    legacy_run_behavior = ctx.attr.legacy_run_behavior
+    docker_run_flags = ctx.attr.docker_run_flags
+    if ctx.attr.base and ImageInfo in ctx.attr.base:
+        legacy_run_behavior = ctx.attr.base[ImageInfo].legacy_run_behavior
+        docker_run_flags = ctx.attr.base[ImageInfo].docker_run_flags
+
+    if ctx.attr.launcher:
+        if not file_map:
+            file_map = {}
+        file_map["/" + ctx.file.launcher.basename] = ctx.file.launcher
 
     # composite a layer from the container_image rule attrs,
     image_layer = _layer.implementation(
@@ -266,6 +328,7 @@ def _impl(
         debs = debs,
         tars = tars,
         env = env,
+        operating_system = operating_system,
         output_layer = output_layer,
     )
 
@@ -281,13 +344,22 @@ def _impl(
     unzipped_layers = parent_parts.get("unzipped_layer", []) + [layer.unzipped_layer for layer in layers]
     layer_diff_ids = [layer.diff_id for layer in layers]
     diff_ids = parent_parts.get("diff_id", []) + layer_diff_ids
+    new_files = [f for f in file_map or []]
+    new_emptyfiles = empty_files or []
+    new_symlinks = [f for f in symlinks or []]
+    parent_transitive_files = parent_parts.get("transitive_files", depset())
+    transitive_files = depset(new_files + new_emptyfiles + new_symlinks, transitive = [parent_transitive_files])
 
     # Get the config for the base layer
     config_file = _get_base_config(ctx, name, base)
 
+    # Get the manifest for the base layer
+    manifest_file = _get_base_manifest(ctx, name, base)
+    manifest_digest = None
+
     # Generate the new config layer by layer, using the attributes specified and the diff_id
     for i, layer in enumerate(layers):
-        config_file, config_digest = _image_config(
+        config_file, config_digest, manifest_file, manifest_digest = _image_config(
             ctx,
             name = name,
             layer_names = [layer_diff_ids[i]],
@@ -296,6 +368,8 @@ def _impl(
             creation_time = creation_time,
             env = layer.env,
             base_config = config_file,
+            base_manifest = manifest_file,
+            operating_system = operating_system,
             layer_name = str(i),
             workdir = workdir or ctx.attr.workdir,
             null_entrypoint = null_entrypoint,
@@ -312,10 +386,17 @@ def _impl(
         "config": config_file,
         "config_digest": config_digest,
 
+        # The path to the v2.2 manifest file.
+        "manifest": manifest_file,
+        "manifest_digest": manifest_digest,
+
         # A list of paths to the layer .tar.gz files
         "zipped_layer": zipped_layers,
         # A list of paths to the layer digests.
         "blobsum": shas,
+
+        # The File containing digest of the image.
+        "digest": output_digest,
 
         # A list of paths to the layer .tar files
         "unzipped_layer": unzipped_layers,
@@ -325,6 +406,9 @@ def _impl(
         # At the root of the chain, we support deriving from a tarball
         # base image.
         "legacy": parent_parts.get("legacy"),
+
+        # Keep track of all files/emptyfiles/symlinks that we have already added to the image layers.
+        "transitive_files": transitive_files,
     }
 
     # We support incrementally loading or assembling this single image
@@ -337,10 +421,11 @@ def _impl(
         ctx,
         images,
         output_executable,
-        run = not ctx.attr.legacy_run_behavior,
-        run_flags = ctx.attr.docker_run_flags,
+        run = not legacy_run_behavior,
+        run_flags = docker_run_flags,
     )
     _assemble_image(ctx, images, output_tarball)
+    _assemble_image_digest(ctx, name, container_parts, output_tarball, output_digest)
 
     runfiles = ctx.runfiles(
         files = unzipped_layers + diff_ids + [config_file, config_digest] +
@@ -352,6 +437,8 @@ def _impl(
         providers = [
             ImageInfo(
                 container_parts = container_parts,
+                legacy_run_behavior = legacy_run_behavior,
+                docker_run_flags = docker_run_flags,
             ),
             DefaultInfo(
                 executable = output_executable,
@@ -383,6 +470,8 @@ _attrs = dict(_layer.attrs.items() + {
     "layers": attr.label_list(providers = [LayerInfo]),
     "repository": attr.string(default = "bazel"),
     "stamp": attr.bool(default = False),
+    "launcher": attr.label(allow_single_file = True),
+    "launcher_args": attr.string_list(default = []),
     # Implicit/Undocumented dependencies.
     "label_files": attr.label_list(
         allow_files = True,
@@ -401,11 +490,18 @@ _attrs = dict(_layer.attrs.items() + {
     # We need these flags to distinguish them.
     "null_cmd": attr.bool(default = False),
     "null_entrypoint": attr.bool(default = False),
+    "_digester": attr.label(
+        default = "@containerregistry//:digester",
+        cfg = "host",
+        executable = True,
+    ),
 }.items() + _hash_tools.items() + _layer_tools.items() + _zip_tools.items())
 
 _outputs = dict(_layer.outputs)
 
 _outputs["out"] = "%{name}.tar"
+
+_outputs["digest"] = "%{name}.digest"
 
 image = struct(
     attrs = _attrs,
@@ -417,6 +513,7 @@ container_image_ = rule(
     attrs = _attrs,
     executable = True,
     outputs = _outputs,
+    toolchains = ["@io_bazel_rules_docker//toolchains/docker:toolchain_type"],
     implementation = _impl,
 )
 
@@ -425,12 +522,19 @@ container_image_ = rule(
 # python list form.
 #
 # The Dockerfile construct:
-#   ENTRYPOINT "/foo"
+#   ENTRYPOINT "/foo" for Linux:
 # Results in:
 #   "Entrypoint": [
 #       "/bin/sh",
 #       "-c",
 #       "\"/foo\""
+#   ],
+#   ENTRYPOINT "foo" for Windows:
+# Results in:
+#   "Entrypoint": [
+#       "%WinDir%\system32\cmd.exe",
+#       "/c",
+#       "\"foo\""
 #   ],
 # Whereas:
 #   ENTRYPOINT ["/foo", "a"]
@@ -440,9 +544,12 @@ container_image_ = rule(
 #       "a"
 #   ],
 # NOTE: prefacing a command with 'exec' just ends up with the former
-def _validate_command(name, argument):
+def _validate_command(name, argument, operating_system):
     if type(argument) == type(""):
-        return ["/bin/sh", "-c", argument]
+        if (operating_system == "windows"):
+            return ["%WinDir%\system32\cmd.exe", "/c", argument]
+        else:
+            return ["/bin/sh", "-c", argument]
     elif type(argument) == type([]):
         return argument
     elif argument:
@@ -556,6 +663,16 @@ def container_image(**kwargs):
   Args:
     **kwargs: See above.
   """
+    operating_system = None
+
+    if ("operating_system" in kwargs):
+        operating_system = kwargs["operating_system"]
+        if operating_system != "linux" and operating_system != "windows":
+            fail(
+                "invalid operating_system(%s) specified. Must be 'linux' or 'windows'" % operating_system,
+                attr = operating_system,
+            )
+
     reserved_attrs = [
         "label_files",
         "label_file_strings",
@@ -583,7 +700,7 @@ def container_image(**kwargs):
             if kwargs["cmd"] == "":
                 kwargs["cmd"] = []
         else:
-            kwargs["cmd"] = _validate_command("cmd", kwargs["cmd"])
+            kwargs["cmd"] = _validate_command("cmd", kwargs["cmd"], operating_system)
 
     # If entrypoint is set but set to None, [] or "",
     # we interpret it as users want to set it to null.
@@ -596,6 +713,6 @@ def container_image(**kwargs):
             if kwargs["entrypoint"] == "":
                 kwargs["entrypoint"] = []
         else:
-            kwargs["entrypoint"] = _validate_command("entrypoint", kwargs["entrypoint"])
+            kwargs["entrypoint"] = _validate_command("entrypoint", kwargs["entrypoint"], operating_system)
 
     container_image_(**kwargs)

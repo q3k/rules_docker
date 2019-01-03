@@ -42,7 +42,7 @@ def _impl(ctx):
     diff_id_args = ["--diff_id=%s" % f.path for f in diff_ids]
     config_arg = "--config=%s" % image["config"].path
 
-    ctx.action(
+    ctx.actions.run(
         executable = ctx.executable._flattener,
         arguments = legacy_base_arg + digest_args + layer_args + diff_id_args +
                     uncompressed_layer_args + [
@@ -62,8 +62,7 @@ def _impl(ctx):
 container_flatten = rule(
     attrs = dict({
         "image": attr.label(
-            allow_files = [".tar"],
-            single_file = True,
+            allow_single_file = [".tar"],
             mandatory = True,
         ),
         "_flattener": attr.label(

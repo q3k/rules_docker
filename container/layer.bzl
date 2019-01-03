@@ -74,7 +74,8 @@ def build_layer(
         directory = None,
         symlinks = None,
         debs = None,
-        tars = None):
+        tars = None,
+        operating_system = None):
     """Build the current layer for appending it to the base layer"""
     layer = output_layer
     build_layer_exec = ctx.executable.build_layer
@@ -84,22 +85,35 @@ def build_layer(
         "--mode=" + ctx.attr.mode,
     ]
 
-    args += ["--file=%s=%s" % (f.path, _magic_path(ctx, f, layer)) for f in files]
-    args += ["--file=%s=%s" % (f.path, path) for (path, f) in file_map.items()]
-    args += ["--empty_file=%s" % f for f in empty_files or []]
-    args += ["--empty_dir=%s" % f for f in empty_dirs or []]
-    args += ["--tar=" + f.path for f in tars]
-    args += ["--deb=" + f.path for f in debs]
-    for k in symlinks:
-        if ":" in k:
-            fail("The source of a symlink cannot container ':', got: %s" % k)
-    args += ["--link=%s:%s" % (k, symlinks[k]) for k in symlinks]
-    arg_file = ctx.new_file(name + "-layer.args")
-    ctx.file_action(arg_file, "\n".join(args))
-    ctx.action(
+    # Windows layer.tar require two separate root directories instead of just 1
+    # 'Files' is the equivalent of '.' in Linux images.
+    # 'Hives' is unique to Windows Docker images.  It is where per layer registry
+    # changes are stored.  rules_docker doesn't support registry deltas, but the
+    # directory is required for compatibility on Windows.
+    empty_root_dirs = []
+    if (operating_system == "windows"):
+        args += ["--root_directory=Files"]
+        empty_root_dirs = ["Files", "Hives"]
+
+    all_files = [struct(src = f.path, dst = _magic_path(ctx, f, layer)) for f in files]
+    all_files += [struct(src = f.path, dst = path) for (path, f) in file_map.items()]
+    manifest = struct(
+        files = all_files,
+        symlinks = [struct(linkname = k, target = symlinks[k]) for k in symlinks],
+        empty_files = empty_files or [],
+        empty_dirs = empty_dirs or [],
+        emprty_root_dirs = empty_root_dirs,
+        tars = [f.path for f in tars],
+        debs = [f.path for f in debs],
+    )
+    manifest_file = ctx.actions.declare_file(name + "-layer.manifest")
+    ctx.actions.write(manifest_file, manifest.to_json())
+    args += ["--manifest=" + manifest_file.path]
+
+    ctx.actions.run(
         executable = build_layer_exec,
-        arguments = ["--flagfile=" + arg_file.path],
-        inputs = files + file_map.values() + tars + debs + [arg_file],
+        arguments = args,
+        inputs = files + file_map.values() + tars + debs + [manifest_file],
         outputs = [layer],
         use_default_shell_env = True,
         mnemonic = "ImageLayer",
@@ -122,6 +136,7 @@ def _impl(
         debs = None,
         tars = None,
         env = None,
+        operating_system = None,
         output_layer = None):
     """Implementation for the container_layer rule.
 
@@ -135,6 +150,7 @@ def _impl(
     directory: str, overrides ctx.attr.directory
     symlinks: str Dict, overrides ctx.attr.symlinks
     env: str Dict, overrides ctx.attr.env
+    operating_system: operating system to target (e.g. linux, windows)
     debs: File list, overrides ctx.files.debs
     tars: File list, overrides ctx.files.tars
     output_layer: File, overrides ctx.outputs.layer
@@ -146,6 +162,7 @@ def _impl(
     empty_dirs = empty_dirs or ctx.attr.empty_dirs
     directory = directory or ctx.attr.directory
     symlinks = symlinks or ctx.attr.symlinks
+    operating_system = operating_system or ctx.attr.operating_system
     debs = debs or ctx.files.debs
     tars = tars or ctx.files.tars
     output_layer = output_layer or ctx.outputs.layer
@@ -163,6 +180,7 @@ def _impl(
         symlinks = symlinks,
         debs = debs,
         tars = tars,
+        operating_system = operating_system,
     )
 
     # Generate the zipped filesystem layer, and its sha256 (aka blob sum)
@@ -186,7 +204,7 @@ _layer_attrs = dict({
     "data_path": attr.string(),
     "directory": attr.string(default = "/"),
     "files": attr.label_list(allow_files = True),
-    "mode": attr.string(default = "0555"),  # 0555 == a+rx
+    "mode": attr.string(default = "0o555"),  # 0o555 == a+rx
     "tars": attr.label_list(allow_files = tar_filetype),
     "debs": attr.label_list(allow_files = deb_filetype),
     "symlinks": attr.string_dict(),
@@ -194,6 +212,10 @@ _layer_attrs = dict({
     # Implicit/Undocumented dependencies.
     "empty_files": attr.string_list(),
     "empty_dirs": attr.string_list(),
+    "operating_system": attr.string(
+        default = "linux",
+        mandatory = False,
+    ),
     "build_layer": attr.label(
         default = Label("//container:build_tar"),
         cfg = "host",
