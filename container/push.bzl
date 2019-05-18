@@ -78,8 +78,8 @@ def _impl(ctx):
     ctx.actions.run(
         inputs = image_files,
         outputs = [ctx.outputs.digest],
-        executable = ctx.executable._digester,
-        arguments = [digester_args],
+        executable = "python2",
+        arguments = [ctx.executable._digester] + [digester_args],
         tools = ctx.attr._digester[DefaultInfo].default_runfiles.files,
         mnemonic = "ContainerPushDigest",
     )
