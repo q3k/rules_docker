@@ -14,6 +14,12 @@
 """Helpers for synthesizing foo_image targets matching foo_binary.
 """
 
+load("@bazel_skylib//lib:dicts.bzl", "dicts")
+load(
+    "@io_bazel_rules_docker//container:providers.bzl",
+    "FilterAspectInfo",
+    "FilterLayerInfo",
+)
 load(
     "//container:container.bzl",
     _container = "container",
@@ -22,7 +28,6 @@ load(
     "//container:layer_tools.bzl",
     _get_layers = "get_from_target",
 )
-load("//container:providers.bzl", "FilterAspectInfo", "FilterLayerInfo")
 
 def _binary_name(ctx):
     # For //foo/bar/baz:blah this would translate to
@@ -107,19 +112,37 @@ def _default_runfiles(dep):
     if FilterLayerInfo in dep:
         return dep[FilterLayerInfo].runfiles.files
     else:
-        return dep.default_runfiles.files
+        return dep[DefaultInfo].default_runfiles.files
 
 def _default_emptyfiles(dep):
     if FilterLayerInfo in dep:
         return dep[FilterLayerInfo].runfiles.empty_filenames
     else:
-        return dep.default_runfiles.empty_filenames
+        return dep[DefaultInfo].default_runfiles.empty_filenames
+
+def _default_symlinks(dep):
+    if FilterLayerInfo in dep:
+        return dep[FilterLayerInfo].runfiles.symlinks
+    else:
+        return dep[DefaultInfo].default_runfiles.symlinks
 
 def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
-    """Appends a layer for a single dependency's runfiles."""
+    """Appends a layer for a single dependency's runfiles.
+
+    Args:
+        ctx: The Bazel runtime context object.
+        runfiles: (Optional) depset of runfiles to include in this language
+                  image layer.
+        emptyfiles: (Optional) depset of empty files to include in this
+                    language image layer.
+
+    Returns:
+        A container image provider for the application layer.
+    """
 
     runfiles = runfiles or _default_runfiles
     emptyfiles = emptyfiles or _default_emptyfiles
+    empty_dirs = []
     workdir = None
 
     parent_parts = _get_layers(ctx, ctx.attr.name, ctx.attr.base)
@@ -128,11 +151,15 @@ def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
     dep = ctx.attr.dep or ctx.attr.binary
     top_layer = ctx.attr.binary and not ctx.attr.dep
 
+    if ctx.attr.create_empty_workspace_dir:
+        # Create an empty directory for the workspace in the app directory.
+        empty_dirs.append("/".join([ctx.attr.directory, ctx.workspace_name]))
+
     # Compute the set of runfiles that have been made available
     # in our base image, tracking absolute paths.
     available = {
         f: None
-        for f in parent_parts.get("transitive_files", depset())
+        for f in parent_parts.get("transitive_files", depset()).to_list()
     }
 
     # Compute the set of remaining runfiles to include into the
@@ -140,13 +167,15 @@ def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
 
     file_map = {
         filepath(ctx, f): f
-        for f in runfiles(dep)
+        # runfiles(dep) can be `depset` or `list`. Covert it to `depset` first
+        # and then call to_list() on it as to_list() cannot be called on type `list`.
+        for f in depset(runfiles(dep)).to_list()
         if filepath(ctx, f) not in available and layer_file_path(ctx, f) not in available
     }
 
     empty_files = [
         emptyfilepath(ctx, f)
-        for f in emptyfiles(dep)
+        for f in depset(emptyfiles(dep)).to_list()
         if emptyfilepath(ctx, f) not in available and _layer_emptyfile_path(ctx, f) not in available
     ]
 
@@ -155,14 +184,21 @@ def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
     # If the caller provided the binary that will eventually form the
     # app layer, we can already create symlinks to the runfiles path.
     if ctx.attr.binary:
+        # Include any symlinks from the runfiles of the target for which we are synthesizing the layer.
+        symlinks.update({
+            (_reference_dir(ctx) + "/" + s.path): layer_file_path(ctx, s.target_file)
+            for s in _default_symlinks(dep).to_list()
+            if hasattr(s, "path")  # "path" and "target_file" are exposed to starlark since bazel 0.21.0.
+        })
+
         symlinks.update({
             _final_file_path(ctx, f): layer_file_path(ctx, f)
-            for f in runfiles(dep)
+            for f in runfiles(dep).to_list()
             if _final_file_path(ctx, f) not in file_map and _final_file_path(ctx, f) not in available
         })
         symlinks.update({
             _final_emptyfile_path(ctx, f): _layer_emptyfile_path(ctx, f)
-            for f in emptyfiles(dep)
+            for f in emptyfiles(dep).to_list()
             if _final_emptyfile_path(ctx, f) not in empty_files and _final_emptyfile_path(ctx, f) not in available
         })
 
@@ -188,6 +224,7 @@ def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
         directory = "/",
         file_map = file_map,
         empty_files = empty_files,
+        empty_dirs = empty_dirs,
         symlinks = symlinks,
         workdir = workdir,
         # Use entrypoint so we can easily add arguments when the resulting
@@ -202,7 +239,10 @@ def app_layer_impl(ctx, runfiles = None, emptyfiles = None):
     )
 
 _app_layer = rule(
-    attrs = dict(_container.image.attrs.items() + {
+    attrs = dicts.add(_container.image.attrs, {
+
+        # The base image on which to overlay the dependency layers.
+        "base": attr.label(mandatory = True),
         # The binary target for which we are synthesizing an image.
         # If specified, the layer will not be "image agnostic", meaning
         # that the runfiles required by "dep" will be created (or symlinked,
@@ -212,22 +252,22 @@ _app_layer = rule(
             executable = True,
             cfg = "target",
         ),
-        # The dependency whose runfiles we're appending.
-        # If not specified, then the layer will be treated as the top layer,
-        # and all remaining deps of "binary" will be added under runfiles.
-        "dep": attr.label(providers = [DefaultInfo]),
-
-        # The base image on which to overlay the dependency layers.
-        "base": attr.label(mandatory = True),
-        "entrypoint": attr.string_list(default = []),
+        # Set this to true to create an empty workspace directory under the
+        # app directory specified as the 'directory' attribute.
+        "create_empty_workspace_dir": attr.bool(default = False),
+        "data": attr.label_list(allow_files = True),
 
         # Override the defaults.
         "data_path": attr.string(default = "."),
-        "workdir": attr.string(default = ""),
+        # The dependency whose runfiles we're appending.
+        # If not specified, then the layer will be treated as the top layer,
+        # and all remaining deps of "binary" will be added under runfiles.
+        "dep": attr.label(),
         "directory": attr.string(default = "/app"),
+        "entrypoint": attr.string_list(default = []),
         "legacy_run_behavior": attr.bool(default = False),
-        "data": attr.label_list(allow_files = True),
-    }.items()),
+        "workdir": attr.string(default = ""),
+    }),
     executable = True,
     outputs = _container.image.outputs,
     toolchains = ["@io_bazel_rules_docker//toolchains/docker:toolchain_type"],
@@ -266,28 +306,24 @@ def _filter_layer_rule_impl(ctx):
 
     runfiles = ctx.runfiles()
     filtered_depsets = []
-    for dep in transitive_deps:
+    for dep in transitive_deps.to_list():
         if str(dep.target.label).startswith(ctx.attr.filter) and str(dep.target.label) != str(ctx.attr.dep.label):
-            runfiles = runfiles.merge(dep.target.default_runfiles)
+            runfiles = runfiles.merge(dep.target[DefaultInfo].default_runfiles)
             filtered_depsets.append(dep.target_deps)
-    return struct(
-        providers = [
-            FilterLayerInfo(
-                runfiles = runfiles,
-                filtered_depset = depset(transitive = filtered_depsets),
-            ),
-        ],
-        # Also forward builtin providers so that the filter_layer() can be used as a normal
-        # dependency to native targets (e.g. py_library(deps = [<filter_layer>])).
-        py = ctx.attr.dep.py if hasattr(ctx.attr.dep, "py") else None,
-    )
+
+    # Forward legacy builtin provider and PyInfo provider
+    return [
+        FilterLayerInfo(
+            runfiles = runfiles,
+            filtered_depset = depset(transitive = filtered_depsets),
+        ),
+    ] + ([ctx.attr.dep[PyInfo]] if PyInfo in ctx.attr.dep else [])
 
 # A rule that allows selecting a subset of transitive dependencies, and using
 # them as a layer in an image.
 filter_layer = rule(
     attrs = {
         "dep": attr.label(
-            providers = [DefaultInfo],
             aspects = [_filter_aspect],
             mandatory = True,
         ),

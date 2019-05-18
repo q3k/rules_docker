@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-package(default_visibility = ["//visibility:public"])
 
-load("//java:image.bzl", "java_image")
 load("//contrib:test.bzl", "container_test")
+load("//java:image.bzl", "java_image")
+
+package(default_visibility = ["//visibility:public"])
 
 java_library(
     name = "java_image_library",
@@ -22,10 +23,16 @@ java_library(
     deps = ["@com_google_guava_guava//jar"],
 )
 
+java_library(
+    name = "java_bin_as_lib",
+    srcs = ["//testdata:Binary.java"],
+    deps = ["//tests/docker/java:java_image_library"],
+)
+
 java_image(
     name = "simple_java_image",
     main_class = "examples.images.Binary",
-    runtime_deps = ["//testdata:java_bin_as_lib"],
+    runtime_deps = [":java_bin_as_lib"],
 )
 
 java_image(
@@ -76,7 +83,7 @@ java_image(
 
 java_image(
     name = "java_partial_entrypoint_image",
-    runtime_deps = ["//testdata:java_bin_as_lib"],
+    runtime_deps = [":java_bin_as_lib"],
 )
 
 container_test(

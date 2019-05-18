@@ -108,10 +108,15 @@ local_repository(
 )
 
 load(
-  "@io_bazel_rules_docker//docker:docker.bzl",
-  "docker_repositories", "docker_pull"
+  "@io_bazel_rules_docker//repositories:repositories.bzl",
+  container_repositories = "repositories",
 )
-docker_repositories()
+container_repositories()
+
+load(
+  "@io_bazel_rules_docker//docker:docker.bzl",
+  "docker_pull",
+)
 
 docker_pull(
   name = "pause",
@@ -126,7 +131,11 @@ EOF
 
 
 function clear_docker() {
-  docker rmi -f $(docker images -aq) || true
+  # Get the IDs of images except the local registry image "registry:2" which is
+  # used in a few of the tests. This avoids having to pull the registry image
+  # multiple times in the end to end tests.
+  images=$(docker images -a --format "{{.ID}} {{.Repository}}:{{.Tag}}" | grep -v "registry:2" | cut -d' ' -f1)
+  docker rmi -f $images || builtin true
   stop_containers
 }
 
@@ -199,7 +208,7 @@ function test_py_image() {
   cd "${ROOT}"
   clear_docker
   cat > output.txt <<EOF
-$(bazel run "$@" testdata:py_image)
+$(bazel run "$@" tests/docker/python:py_image)
 EOF
   EXPECT_CONTAINS "$(cat output.txt)" "First: 4"
   EXPECT_CONTAINS "$(cat output.txt)" "Second: 5"
@@ -236,7 +245,7 @@ EOF
 function test_cc_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run "$@" testdata:cc_image)" "Hello World"
+  EXPECT_CONTAINS "$(bazel run "$@" tests/docker/cc:cc_image)" "Hello World"
 }
 
 function test_cc_binary_as_image() {
@@ -260,23 +269,23 @@ function test_launcher_image() {
 function test_go_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run "$@" testdata:go_image)" "Hello, world!"
+  EXPECT_CONTAINS "$(bazel run "$@" tests/docker/go:go_image)" "Hello, world!"
 }
 
 function test_go_image_busybox() {
   cd "${ROOT}"
   clear_docker
-  bazel run -c dbg testdata:go_image -- --norun
+  bazel run -c dbg tests/docker/go:go_image -- --norun
   local number=$RANDOM
-  EXPECT_CONTAINS "$(docker run -ti --rm --entrypoint=sh bazel/testdata:go_image -c \"echo aa${number}bb\")" "aa${number}bb"
+  EXPECT_CONTAINS "$(docker run -ti --rm --entrypoint=sh bazel/tests/docker/go:go_image -c \"echo aa${number}bb\")" "aa${number}bb"
 }
 
 function test_go_image_with_tags() {
   cd "${ROOT}"
-  EXPECT_CONTAINS "$(bazel query //testdata:go_image)" "//testdata:go_image"
-  EXPECT_CONTAINS "$(bazel query 'attr(tags, tag1, //testdata:go_image)')" "//testdata:go_image"
-  EXPECT_CONTAINS "$(bazel query 'attr(tags, tag2, //testdata:go_image)')" "//testdata:go_image"
-  EXPECT_NOT_CONTAINS "$(bazel query 'attr(tags, other_tag, //testdata:go_image)')" "//testdata:go_image"
+  EXPECT_CONTAINS "$(bazel query //tests/docker/go:go_image)" "//tests/docker/go:go_image"
+  EXPECT_CONTAINS "$(bazel query 'attr(tags, tag1, //tests/docker/go:go_image)')" "//tests/docker/go:go_image"
+  EXPECT_CONTAINS "$(bazel query 'attr(tags, tag2, //tests/docker/go:go_image)')" "//tests/docker/go:go_image"
+  EXPECT_NOT_CONTAINS "$(bazel query 'attr(tags, other_tag, //tests/docker/go:go_image)')" "//tests/docker/go:go_image"
   echo yay
 }
 
@@ -305,11 +314,11 @@ function test_java_sandwich_image() {
   EXPECT_CONTAINS "$(bazel run "$@" testdata:java_sandwich_image)" "Hello World"
 }
 
-function test_java_bin_as_lib_image() {
+function test_java_simple_image() {
   cd "${ROOT}"
   clear_docker
-  bazel run testdata:java_bin_as_lib_image
-  docker run -ti --rm bazel/testdata:java_bin_as_lib_image
+  bazel run tests/docker/java:simple_java_image
+  docker run -ti --rm bazel/tests/docker/java:simple_java_image
 }
 
 function test_java_image_arg_echo() {
@@ -343,7 +352,7 @@ function test_war_image_with_custom_run_flags() {
 function test_scala_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run "$@" testdata:scala_image)" "Hello World"
+  EXPECT_CONTAINS "$(bazel run "$@" tests/docker/scala:scala_image)" "Hello World"
 }
 
 function test_scala_sandwich_image() {
@@ -355,7 +364,7 @@ function test_scala_sandwich_image() {
 function test_groovy_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run "$@" testdata:groovy_image)" "Hello World"
+  EXPECT_CONTAINS "$(bazel run "$@" tests/docker/groovy:groovy_image)" "Hello World"
 }
 
 function test_groovy_scala_image() {
@@ -367,7 +376,7 @@ function test_groovy_scala_image() {
 function test_rust_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run "$@" testdata:rust_image)" "Hello world"
+  EXPECT_CONTAINS "$(bazel run "$@" tests/docker/rust:rust_image)" "Hello world"
 }
 
 function test_d_image() {
@@ -379,7 +388,7 @@ function test_d_image() {
 function test_nodejs_image() {
   cd "${ROOT}"
   clear_docker
-  EXPECT_CONTAINS "$(bazel run testdata:nodejs_image)" "Hello World!"
+  EXPECT_CONTAINS "$(bazel run tests/docker/nodejs:nodejs_image)" "Hello World!"
 }
 
 function test_container_push() {
@@ -388,6 +397,16 @@ function test_container_push() {
   cid=$(docker run --rm -d -p 5000:5000 --name registry registry:2)
   bazel build tests/docker:push_test
   # run here file_test targets to verify test outputs of push_test
+
+  docker stop -t 0 $cid
+}
+
+function test_container_push_tag_file() {
+  cd "${ROOT}"
+  clear_docker
+  cid=$(docker run --rm -d -p 5000:5000 --name registry registry:2)
+  bazel build tests/docker:push_tag_file_test
+  EXPECT_CONTAINS "$(cat bazel-bin/tests/docker/push_tag_file_test)" '--name=localhost:5000/docker/test:$(cat ${RUNFILES}/io_bazel_rules_docker/tests/docker/test.tag)'
 
   docker stop -t 0 $cid
 }
@@ -471,7 +490,61 @@ function test_container_push_with_stamp() {
   docker stop -t 0 $cid
 }
 
+function test_container_push_all() {
+  cd "${ROOT}"
+  clear_docker
+  cid=$(docker run --rm -d -p 5000:5000 --name registry registry:2)
+  # Use bundle push to push three images to the local registry.
+  bazel run tests/docker:test_docker_push_three_images_bundle
+  # Pull the three images we just pushed to ensure uploaded manifests
+  # are valid according to docker.
+  EXPECT_CONTAINS "$(docker pull localhost:5000/image0:latest)" "Downloaded newer image"
+  EXPECT_CONTAINS "$(docker pull localhost:5000/image1:latest)" "Downloaded newer image"
+  EXPECT_CONTAINS "$(docker pull localhost:5000/image2:latest)" "Downloaded newer image"
+  docker stop -t 0 $cid
+}
+
+function test_container_pull_cache() {
+  cd "${ROOT}"
+  clear_docker
+  scratch_dir="/tmp/_tmp_containnerregistry"
+  cache_dir="$scratch_dir/containnerregistry_cache"
+  bazel_cache="$scratch_dir/bazel_custom_cache"
+
+  # Delete and recreate temp directories.
+  rm -rf $scratch_dir
+  mkdir -p $cache_dir
+  mkdir -p $bazel_cache
+
+  # Run container puller one with caching.
+  DOCKER_REPO_CACHE=$cache_dir PULLER_TIMEOUT=600 bazel --output_base=$bazel_cache test //tests/docker:distoless_fixed_id_digest_test
+
+  # Rerun the puller by changing the puller timeout to force a rerun of of the
+  # target but now using the cache instead of downloading it again.
+  DOCKER_REPO_CACHE=$cache_dir PULLER_TIMEOUT=601 bazel --output_base=$bazel_cache test //tests/docker:distoless_fixed_id_digest_test
+
+  rm -rf $scratch_dir
+}
+
+# TODO(alex1545): remove this test from here and enable running on buildkite
+# once docker is supported.
+function test_dockerfile_image_basic() {
+  cd "${ROOT}"
+  clear_docker
+  bazel test tests/docker:basic_dockerfile_image
+}
+
+function test_py_image_deps_as_layers() {
+  cd "${ROOT}"
+  clear_docker
+  # Build and run the python image where the "six" module pip dependency was
+  # specified via "layers". https://github.com/bazelbuild/rules_docker/issues/161
+  EXPECT_CONTAINS "$(bazel run testdata/test:py_image_using_layers)" "Successfully imported six 1.11.0"
+}
+
+test_py_image_deps_as_layers
 test_container_push_with_stamp
+test_container_push_all
 test_container_push_with_auth
 test_container_pull_with_auth
 test_top_level
@@ -503,7 +576,7 @@ test_java_image_with_custom_run_flags -c opt
 test_java_image_with_custom_run_flags -c dbg
 test_java_sandwich_image -c opt
 test_java_sandwich_image -c dbg
-test_java_bin_as_lib_image
+test_java_simple_image
 test_java_image_arg_echo
 test_war_image
 test_war_image_with_custom_run_flags
@@ -523,4 +596,7 @@ test_rust_image -c dbg
 test_nodejs_image -c opt
 test_nodejs_image -c dbg
 test_container_push
+test_container_push_tag_file
 test_launcher_image
+test_container_pull_cache
+test_dockerfile_image_basic

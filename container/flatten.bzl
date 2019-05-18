@@ -13,12 +13,13 @@
 # limitations under the License.
 """A rule to flatten container images."""
 
+load("@bazel_skylib//lib:dicts.bzl", "dicts")
+load("@io_bazel_rules_docker//container:providers.bzl", "FlattenInfo")
 load(
     "//container:layer_tools.bzl",
     _get_layers = "get_from_target",
     _layer_tools = "tools",
 )
-load("//container:providers.bzl", "FlattenInfo")
 
 def _impl(ctx):
     """Core implementation of container_flatten."""
@@ -60,7 +61,7 @@ def _impl(ctx):
     return [FlattenInfo()]
 
 container_flatten = rule(
-    attrs = dict({
+    attrs = dicts.add({
         "image": attr.label(
             allow_single_file = [".tar"],
             mandatory = True,
@@ -71,7 +72,7 @@ container_flatten = rule(
             executable = True,
             allow_files = True,
         ),
-    }.items() + _layer_tools.items()),
+    }, _layer_tools),
     outputs = {
         "filesystem": "%{name}.tar",
         "metadata": "%{name}.json",
