@@ -72,7 +72,18 @@ def _toolchain_configure_impl(repository_ctx):
 
     # If client_config is not set we need to pass an empty string to the
     # template.
-    client_config = repository_ctx.attr.client_config or ""
+    client_config = ""
+    if repository_ctx.attr.client_config:
+        # If set, resolve path if it looks like a target - otherwise assume it's
+        # an absolute file path for compatibility.
+        target = repository_ctx.attr.client_config
+        if target.startswith('/') and not target.startswith('//'):
+            # absolute path, do not resolve
+            client_config = target
+        else:
+            # target path, resolve
+            client_config = repository_ctx.path(target)
+
     repository_ctx.template(
         "BUILD",
         Label("@io_bazel_rules_docker//toolchains/docker:BUILD.tpl"),
